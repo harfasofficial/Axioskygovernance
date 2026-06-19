@@ -19,7 +19,8 @@ from security.ssrf import validate_url_and_resolve
 
 logger = logging.getLogger(__name__)
 
-PUBLIC_BASE_URL = os.getenv("AXIOSKY_PUBLIC_BASE_URL", "http://localhost:8000")
+# Must be set explicitly in every deployed environment.
+PUBLIC_BASE_URL = os.getenv("AXIOSKY_PUBLIC_BASE_URL", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 
@@ -32,10 +33,6 @@ class EscalationService:
 
     @staticmethod
     def _is_valid_webhook_url(url: str) -> bool:
-        """
-        Full SSRF validation using shared security utility.
-        Blocks private IPs, IPv6 literals, internal TLDs, DNS rebinding.
-        """
         try:
             validate_url_and_resolve(url)
             return True
@@ -45,7 +42,6 @@ class EscalationService:
 
     @staticmethod
     def _sign_payload(payload: dict, secret: str) -> str:
-        """Sign webhook payload with HMAC-SHA256."""
         if not secret:
             raise ValueError("WEBHOOK_SECRET must be set before signing payloads")
         body = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
@@ -53,7 +49,7 @@ class EscalationService:
 
     async def create(
         self,
-        tenant_id: str,
+        tenant_id: int,
         decision_id: str,
         agent_id: str,
         action_type: str,
@@ -111,7 +107,14 @@ class EscalationService:
         return escalation_id
 
     async def _fire_webhook_with_retry(self, webhook_url: str, escalation_id: str, **context) -> None:
-        """Fire webhook with HMAC signature and retry logic (exponential backoff)."""
+        if not PUBLIC_BASE_URL:
+            logger.warning(
+                "AXIOSKY_PUBLIC_BASE_URL is not set -- skipping approval/reject URL generation "
+                "for escalation %s. Set this env var in every deployed environment.",
+                escalation_id,
+            )
+            return
+
         payload = {
             "event": "escalation_created",
             "escalation_id": escalation_id,
@@ -150,7 +153,7 @@ class EscalationService:
                     escalation_id, attempt + 1, exc,
                 )
 
-            await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s
+            await asyncio.sleep(2 ** attempt)
 
         logger.error(
             "Escalation webhook for %s failed after 3 attempts -- delivery abandoned",
@@ -160,7 +163,7 @@ class EscalationService:
     async def resolve(
         self,
         escalation_id: str,
-        tenant_id: str,
+        tenant_id: int,
         human_decision: str,
         resolved_by: str,
     ) -> dict:

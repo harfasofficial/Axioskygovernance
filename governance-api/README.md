@@ -11,8 +11,8 @@ audit trail.
 ## Quick Start (Docker)
 
 ```bash
-git clone https://github.com/axiosky/governance-api.git
-cd governance-api
+git clone https://github.com/harfasofficial/Axioskygovernance.git
+cd Axioskygovernance/governance-api
 cp .env.example .env          # edit .env with your values
 docker-compose up -d          # starts API + Postgres + Redis
 python scripts/seed_dev.py    # seeds a test tenant + API key
@@ -28,7 +28,6 @@ curl -X POST http://localhost:8000/v1/evaluate \
     "agent_id": "loan_agent_v1",
     "action_type": "loan_approval",
     "timestamp": "2026-05-01T10:00:00Z",
-    "tenant_id": "1",
     "environment": "shadow",
     "payload": {
       "amount": 6000000,
@@ -55,17 +54,17 @@ result = client.evaluate(
     payload={"amount": 5000000, "customer_id": "CUST_001"},
 )
 
-print(result.status)        # APPROVE | BLOCK | ESCALATE
-print(result.reason_code)   # POLICY_001, DPDP_001, etc.
+print(result.status)
+print(result.reason_code)
 ```
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+|--------|----------|--------------|
 | POST | `/v1/evaluate` | Evaluate an AI action |
 | GET | `/v1/audit-logs` | Query audit trail |
-| POST | `/v1/audit-logs/verify` | Verify hash chain integrity |
+| GET | `/v1/audit-logs/verify` | Verify hash chain integrity |
 | GET | `/v1/reports/shadow` | Generate shadow mode report |
 | GET | `/v1/escalations` | List pending escalations |
 | POST | `/v1/escalations/{id}/approve` | Approve escalation |
@@ -81,10 +80,7 @@ print(result.reason_code)   # POLICY_001, DPDP_001, etc.
 ## Running Tests
 
 ```bash
-# Start dependencies
 docker-compose up -d db redis
-
-# Run tests
 pytest tests/ -v
 ```
 
@@ -102,6 +98,12 @@ python scripts/provision_tenant.py "Client Bank Pvt Ltd"
 - Tenant isolation: Enforced at API, ORM, and database layers
 - SSRF protection: Context hooks validated against private IP ranges
 - Webhook signing: HMAC-SHA256 signature on all escalation webhooks
+
+## Deployment Notes
+
+- Set `AXIOSKY_PUBLIC_BASE_URL` explicitly in every deployed environment; do not rely on localhost defaults.
+- Set `AUDIT_WRITE_MODE=sync` for bank/NBFC pilots where durability matters more than latency.
+- Use `AUDIT_WRITE_MODE=async` (default) for playground/dev where best-effort audit writes are acceptable.
 
 ## Environment Variables
 
