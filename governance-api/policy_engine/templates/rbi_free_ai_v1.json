@@ -1,0 +1,69 @@
+{
+  "template_id": "rbi_free_ai_v1",
+  "template_name": "RBI FREE-AI Core Compliance Pack",
+  "version": "1.0",
+  "description": "Core governance rules derived from RBI FREE-AI framework (Aug 2025).",
+  "rules": [
+    {
+      "rule_id": "rbi_high_value_loan_block",
+      "action_type": "loan_approval",
+      "conditions": [
+        { "field": "amount", "operator": "gt", "value": 50000000 }
+      ],
+      "action": "BLOCK",
+      "reason": "Loans above Rs 50L require CRO approval before execution -- RBI FREE-AI Section 4.2",
+      "reason_code": "POLICY_001",
+      "version": "rbi-free-ai-v1.0"
+    },
+    {
+      "rule_id": "rbi_blacklisted_customer_block",
+      "action_type": "loan_approval",
+      "conditions": [
+        { "field": "watchlist_result", "operator": "eq", "value": true }
+      ],
+      "action": "BLOCK",
+      "reason": "Customer flagged on internal watchlist -- loan blocked per internal controls",
+      "reason_code": "POLICY_002",
+      "version": "rbi-free-ai-v1.0"
+    },
+    {
+      "rule_id": "rbi_fraud_score_block",
+      "action_type": "loan_approval",
+      "conditions": [
+        { "field": "fraud_score", "operator": "gte", "value": 70 }
+      ],
+      "action": "BLOCK",
+      "reason": "Fraud risk score above acceptable threshold (70/100) -- automatic block",
+      "reason_code": "POLICY_003",
+      "version": "rbi-free-ai-v1.0"
+    },
+    {
+      "rule_id": "rbi_high_value_escalate",
+      "action_type": "loan_approval",
+      "conditions": [
+        { "field": "amount", "operator": "gt",  "value": 20000000 },
+        { "field": "amount", "operator": "lte", "value": 50000000 }
+      ],
+      "action": "ESCALATE",
+      "reason": "Loans between Rs 20L and Rs 50L require senior officer review -- RBI FREE-AI Section 4.2",
+      "reason_code": "POLICY_004",
+      "version": "rbi-free-ai-v1.0",
+      "escalation_config": {
+        "target_role": "chief_risk_officer",
+        "expires_minutes": 60,
+        "action_on_expiry": "BLOCK"
+      }
+    },
+    {
+      "rule_id": "rbi_unverified_income_block",
+      "action_type": "loan_approval",
+      "conditions": [
+        { "field": "income_verified", "operator": "eq", "value": false }
+      ],
+      "action": "BLOCK",
+      "reason": "Income not verified -- loan decision cannot proceed without document verification",
+      "reason_code": "POLICY_005",
+      "version": "rbi-free-ai-v1.0"
+    }
+  ]
+}

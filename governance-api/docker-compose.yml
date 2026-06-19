@@ -1,0 +1,78 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://axiosky:axiosky@db:5432/axiosky
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - AXIOSKY_PUBLIC_BASE_URL=${AXIOSKY_PUBLIC_BASE_URL:-http://localhost:8000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-dev-webhook-secret-change-in-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-100}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  db:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: axiosky
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-axiosky}
+      POSTGRES_DB: axiosky
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axiosky -d axiosky"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  postgres_data:
+  redis_data:

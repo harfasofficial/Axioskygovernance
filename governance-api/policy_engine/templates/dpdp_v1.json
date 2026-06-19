@@ -1,0 +1,30 @@
+{
+  "template_id": "dpdp_v1",
+  "template_name": "DPDP Act Core Compliance Pack",
+  "version": "1.0",
+  "description": "Rules derived from Digital Personal Data Protection Act 2023.",
+  "rules": [
+    {
+      "rule_id": "dpdp_no_consent_block",
+      "action_type": "access_customer_data",
+      "conditions": [
+        { "field": "consent_verified", "operator": "eq", "value": false }
+      ],
+      "action": "BLOCK",
+      "reason": "Customer data access requires verified consent -- DPDP Act Section 6",
+      "reason_code": "DPDP_001",
+      "version": "dpdp-v1.0"
+    },
+    {
+      "rule_id": "dpdp_minor_data_block",
+      "action_type": "access_customer_data",
+      "conditions": [
+        { "field": "customer_age", "operator": "lt", "value": 18 }
+      ],
+      "action": "BLOCK",
+      "reason": "Processing data of minors requires additional verifiable consent -- DPDP Act Section 9",
+      "reason_code": "DPDP_002",
+      "version": "dpdp-v1.0"
+    }
+  ]
+}
