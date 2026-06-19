@@ -40,7 +40,6 @@ class ApiKey(Base):
 
 
 class Agent(Base):
-    """Agent model - reserved for future agent registry functionality."""
     __tablename__ = "agents"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -56,7 +55,6 @@ class Agent(Base):
 
 
 class Policy(Base):
-    """Policy model - reserved for future database-driven policy management."""
     __tablename__ = "policies"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -77,7 +75,7 @@ class AuditLog(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     decision_id: Mapped[str] = mapped_column(UUID(as_uuid=False), unique=True, nullable=False)
-    tenant_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
     action_type: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(10), nullable=False)
@@ -100,7 +98,7 @@ class Escalation(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     escalation_id: Mapped[str] = mapped_column(UUID(as_uuid=False), unique=True, nullable=False)
-    tenant_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     decision_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
     agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
     action_type: Mapped[str] = mapped_column(String(255), nullable=False)
