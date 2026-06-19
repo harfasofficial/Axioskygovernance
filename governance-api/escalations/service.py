@@ -8,7 +8,6 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -16,11 +15,18 @@ from sqlalchemy import select
 from database.models import Escalation
 from database.session import AsyncSessionLocal
 from policy_engine.models import EscalationConfig
+from security.ssrf import validate_outbound_url
 
 logger = logging.getLogger(__name__)
 
 PUBLIC_BASE_URL = os.getenv("AXIOSKY_PUBLIC_BASE_URL", "http://localhost:8000")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+
+if not WEBHOOK_SECRET:
+    logger.warning(
+        "WEBHOOK_SECRET is not set. Escalation webhooks will be sent unsigned. "
+        "Set WEBHOOK_SECRET in your environment for production deployments."
+    )
 
 
 class EscalationService:
@@ -31,16 +37,16 @@ class EscalationService:
 
     @staticmethod
     def _is_valid_webhook_url(url: str) -> bool:
-        """Validate webhook URL to prevent SSRF via escalation webhooks."""
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
+        """
+        Validate webhook URL using full SSRF protection:
+        DNS resolution, private CIDR blocking, IPv6 literal blocking.
+        """
+        try:
+            validate_outbound_url(url)
+            return True
+        except ValueError as exc:
+            logger.warning("Webhook URL rejected (SSRF): %s", exc)
             return False
-        host = parsed.hostname
-        if not host:
-            return False
-        if host in ("localhost", "127.0.0.1", "0.0.0.0"):
-            return False
-        return True
 
     @staticmethod
     def _sign_payload(payload: dict, secret: str) -> str:
@@ -84,7 +90,6 @@ class EscalationService:
             db.add(esc)
             await db.commit()
 
-        # Validate and fire webhook
         if webhook_url:
             if not self._is_valid_webhook_url(webhook_url):
                 logger.warning("Invalid webhook URL rejected: %s", webhook_url)
@@ -109,7 +114,7 @@ class EscalationService:
         return escalation_id
 
     async def _fire_webhook_with_retry(self, webhook_url: str, escalation_id: str, **context) -> None:
-        """Fire webhook with HMAC signature and retry logic."""
+        """Fire webhook with HMAC signature and exponential backoff retry."""
         payload = {
             "event": "escalation_created",
             "escalation_id": escalation_id,
@@ -120,12 +125,15 @@ class EscalationService:
 
         headers = {"Content-Type": "application/json"}
 
-        # Add HMAC signature if secret is configured
         if WEBHOOK_SECRET:
             signature = self._sign_payload(payload, WEBHOOK_SECRET)
             headers["X-Axiosky-Signature"] = f"sha256={signature}"
+        else:
+            logger.warning(
+                "Sending unsigned webhook for escalation %s (WEBHOOK_SECRET not set)",
+                escalation_id,
+            )
 
-        # Retry up to 3 times with exponential backoff
         for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
@@ -137,7 +145,7 @@ class EscalationService:
                 )
 
                 if response.status_code < 500:
-                    return  # Success or client error (don't retry)
+                    return
 
             except Exception as exc:
                 logger.error(
@@ -146,6 +154,11 @@ class EscalationService:
                 )
 
             await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
+
+        logger.error(
+            "Escalation webhook permanently failed for %s after 3 attempts",
+            escalation_id,
+        )
 
     async def resolve(
         self,

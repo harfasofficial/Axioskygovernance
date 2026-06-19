@@ -50,13 +50,18 @@ services:
       - migrate
 
   db:
-    image: postgres:16  # Upgraded from 14 (EOL Nov 2026)
+    # Pin to a specific minor version for reproducibility.
+    # To upgrade: change the tag and test migrations before deploying.
+    image: postgres:16.3-alpine
     environment:
       POSTGRES_USER: axiosky
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: axiosky
     ports:
-      - "5432:5432"
+      # Bind to localhost only -- do NOT expose postgres to 0.0.0.0 in production.
+      # Remove this ports block entirely in production; containers communicate
+      # via the internal Docker network without host-level port binding.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -72,9 +77,11 @@ services:
           memory: 1G
 
   redis:
-    image: redis:7-alpine
+    # Pin to a specific minor version for reproducibility.
+    image: redis:7.2-alpine
     ports:
-      - "6379:6379"
+      # Bind to localhost only -- do NOT expose redis to 0.0.0.0 in production.
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:

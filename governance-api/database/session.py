@@ -3,24 +3,27 @@ import os
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 load_dotenv()
 
 DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://axiosky:axiosky@localhost:5432/axiosky')
 ASYNC_DATABASE_URL = DATABASE_URL.replace('postgresql://', 'postgresql+asyncpg://')
 
-# Use NullPool in test environment to avoid stale connections
-# Use AsyncAdaptedQueuePool in production for connection reuse
+# Use NullPool in test environment to avoid stale connections between tests.
+# Use AsyncAdaptedQueuePool (default) in production for connection reuse.
 _is_test = os.getenv('ENVIRONMENT') == 'test'
 
-_pool_kwargs = {
-    "poolclass": None,  # Uses default AsyncAdaptedQueuePool
-    "pool_size": 10,
-    "max_overflow": 20,
-    "pool_pre_ping": True,
-} if not _is_test else {
-    "poolclass": None,  # Will set NullPool below
-}
+if _is_test:
+    _pool_kwargs = {
+        "poolclass": NullPool,
+    }
+else:
+    _pool_kwargs = {
+        "pool_size": 10,
+        "max_overflow": 20,
+        "pool_pre_ping": True,
+    }
 
 engine = create_async_engine(
     ASYNC_DATABASE_URL,

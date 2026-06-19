@@ -1,16 +1,25 @@
 # conftest.py
 import os
+import sys
+
+# SAFETY GUARD: Prevent running tests against a non-test database.
+# Set ENVIRONMENT=test in your .env.test or pytest invocation.
+assert os.getenv("ENVIRONMENT", "") == "test" or "pytest" in sys.modules, (
+    "SAFETY: ENVIRONMENT must be 'test' when running pytest. "
+    "Add ENVIRONMENT=test to your .env.test file or run: ENVIRONMENT=test pytest"
+)
+
 import pytest_asyncio
 from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv('.env'), override=True)
 
+# Force test environment after loading .env (in case .env overrides it)
+os.environ['ENVIRONMENT'] = 'test'
+
 db_url = os.getenv('DATABASE_URL', '')
 if db_url and 'asyncpg' not in db_url:
     os.environ['DATABASE_URL'] = db_url.replace('postgresql://', 'postgresql+asyncpg://')
-
-# Ensure test environment for proper pool configuration
-os.environ['ENVIRONMENT'] = 'test'
 
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
