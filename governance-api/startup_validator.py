@@ -6,12 +6,12 @@ error message rather than running with insecure defaults.
 """
 import os
 import sys
-import secrets
 
 REQUIRED_SECRETS = [
     "SECRET_KEY",
     "WEBHOOK_SECRET",
     "DB_PASSWORD",
+    "ADMIN_SECRET",   # Required: gates tenant provisioning and API key management
 ]
 
 KNOWN_WEAK_VALUES = {
@@ -21,6 +21,8 @@ KNOWN_WEAK_VALUES = {
     "changeme",
     "secret",
     "password",
+    "admin",
+    "admin_secret",
     "",
 }
 
