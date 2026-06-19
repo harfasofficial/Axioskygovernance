@@ -6,7 +6,7 @@ from typing import Optional, List, Any
 class PolicyCondition(BaseModel):
     """A single condition within a rule."""
     field:    str     # The payload field to check, e.g. 'amount'
-    operator: str     # gt, gte, lt, lte, eq, neq, in, not_in
+    operator: str     # gt, gte, lt, lte, eq, neq, in, not_in, contains, starts_with, ends_with
     value:    Any     # The threshold or comparison value
 
 
@@ -21,14 +21,18 @@ class PolicyRule(BaseModel):
     """
     One rule inside a policy template.
     Rules are evaluated in order. First match wins.
-    If no rule matches: APPROVE.
+    If no rule matches: BLOCK (fail-closed).
+
+    conditions: ALL must be true (AND logic)
+    any_of:     AT LEAST ONE must be true (OR logic, optional)
     """
     rule_id:           str
-    action_type:       str                        # Which action this rule applies to
-    conditions:        List[PolicyCondition]      # ALL conditions must be true to trigger
+    action_type:       str
+    conditions:        List[PolicyCondition]       = []
+    any_of:            Optional[List[PolicyCondition]] = None  # OR logic
     action:            str                        # APPROVE | BLOCK | ESCALATE
-    reason:            str                        # Human-readable. Goes in audit log.
-    reason_code:       str                        # Machine-readable. e.g. POLICY_001
+    reason:            str
+    reason_code:       str
     version:           str
     escalation_config: Optional[EscalationConfig] = None
 
@@ -45,12 +49,12 @@ class PolicyTemplate(BaseModel):
 class PolicyResult(BaseModel):
     """
     What the engine returns after evaluation.
-    This is what goes into the Governor response and eventually the audit log.
+    Goes into the Governor response and audit log.
     """
-    status:           str                        # APPROVE | BLOCK | ESCALATE
-    rule_triggered:   Optional[str]   = None     # rule_id of the matched rule
-    rules_evaluated:  List[str]       = []       # All rule_ids that were checked
-    reason:           str             = 'all_policies_passed'
-    reason_code:      str             = 'POLICY_OK'
-    policy_version:   str             = 'default'
-    escalation:       Optional[EscalationConfig] = None
+    status:          str
+    rule_triggered:  Optional[str]   = None
+    rules_evaluated: List[str]       = []
+    reason:          str             = 'no_policy_matched'
+    reason_code:     str             = 'NO_POLICY_MATCHED'
+    policy_version:  str             = 'default'
+    escalation:      Optional[EscalationConfig] = None

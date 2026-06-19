@@ -4,13 +4,15 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://axiosky:axiosky@db:5432/axiosky
+      # REQUIRED: Set all of these in a .env file or your deployment secrets manager.
+      # Do NOT use the defaults -- they are insecure placeholders.
+      - DATABASE_URL=postgresql://axiosky:${DB_PASSWORD}@db:5432/axiosky
       - REDIS_URL=redis://redis:6379
-      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
+      - SECRET_KEY=${SECRET_KEY}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - AXIOSKY_PUBLIC_BASE_URL=${AXIOSKY_PUBLIC_BASE_URL:-http://localhost:8000}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-dev-webhook-secret-change-in-production}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-100}
     depends_on:
@@ -33,11 +35,25 @@ services:
         reservations:
           memory: 256M
 
+  migrate:
+    # Separate migration service -- run once before starting api.
+    # Usage: docker-compose run --rm migrate
+    build: .
+    command: ["python", "-m", "database.migrate"]
+    environment:
+      - DATABASE_URL=postgresql://axiosky:${DB_PASSWORD}@db:5432/axiosky
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - migrate
+
   db:
-    image: postgres:14
+    image: postgres:16  # Upgraded from 14 (EOL Nov 2026)
     environment:
       POSTGRES_USER: axiosky
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-axiosky}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: axiosky
     ports:
       - "5432:5432"

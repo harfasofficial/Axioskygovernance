@@ -1,6 +1,7 @@
 # API Framework
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
+gunicorn==21.2.0
 pydantic==2.5.0
 python-multipart==0.0.6
 
@@ -15,9 +16,13 @@ python-dotenv==1.0.0
 redis==5.0.1
 
 # Security
-passlib[bcrypt]==1.7.4
-python-jose==3.3.0
+# NOTE: passlib and python-jose removed -- unused and contain CVEs.
+# Auth uses SHA-256 on high-entropy API keys (see auth/service.py).
+
+# Observability
+prometheus-fastapi-instrumentator==6.1.0
 
 # Testing
 pytest==7.4.3
 pytest-asyncio==0.21.1
+httpx==0.25.2

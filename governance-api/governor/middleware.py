@@ -1,5 +1,6 @@
 # governor/middleware.py
 import logging
+import os
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -10,8 +11,33 @@ from database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
 # Paths that do NOT require authentication
-PUBLIC_PATHS = {'/health', '/docs', '/openapi.json', '/redoc'}
+BASE_PUBLIC_PATHS = {'/health'}
+DEV_ONLY_PATHS = {'/docs', '/openapi.json', '/redoc'}
+
+# In production, API docs are gated. In dev/test they're open.
+if ENVIRONMENT == "production":
+    PUBLIC_PATHS = BASE_PUBLIC_PATHS
+else:
+    PUBLIC_PATHS = BASE_PUBLIC_PATHS | DEV_ONLY_PATHS
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """
+    Adds security headers to every response.
+    Prevents clickjacking, MIME sniffing, and other common web attacks.
+    """
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if ENVIRONMENT == "production":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
 
 
 class TenantMiddleware(BaseHTTPMiddleware):
@@ -43,7 +69,6 @@ class TenantMiddleware(BaseHTTPMiddleware):
             async with AsyncSessionLocal() as db:
                 tenant_ctx = await auth_service.validate(auth_header, db)
         except Exception as e:
-            # Log full exception internally, return generic message to client
             logger.error("Auth middleware error: %s", e, exc_info=True)
             detail = getattr(e, 'detail', 'Authentication failed')
             status_code = getattr(e, 'status_code', 401)
