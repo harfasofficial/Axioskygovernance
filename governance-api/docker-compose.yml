@@ -50,13 +50,14 @@ services:
       - migrate
 
   db:
-    image: postgres:16  # Upgraded from 14 (EOL Nov 2026)
+    image: postgres:16
     environment:
       POSTGRES_USER: axiosky
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: axiosky
     ports:
-      - "5432:5432"
+      # Bound to 127.0.0.1 only -- never expose DB to public internet
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -74,7 +75,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Bound to 127.0.0.1 only -- never expose Redis to public internet
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:

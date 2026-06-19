@@ -5,18 +5,24 @@ from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv('.env'), override=True)
 
+# Safety guard: never run tests against a production database.
+# Set ENVIRONMENT=test in your .env.test or CI environment.
+assert os.getenv("DATABASE_URL", "") == "" or os.getenv("ENVIRONMENT") == "test", (
+    "\n\nDANGER: ENVIRONMENT is not set to 'test' but DATABASE_URL is set.\n"
+    "Tests must not run against a production or staging database.\n"
+    "Set ENVIRONMENT=test in .env.test or your CI secrets.\n"
+)
+
 db_url = os.getenv('DATABASE_URL', '')
 if db_url and 'asyncpg' not in db_url:
     os.environ['DATABASE_URL'] = db_url.replace('postgresql://', 'postgresql+asyncpg://')
 
-# Ensure test environment for proper pool configuration
 os.environ['ENVIRONMENT'] = 'test'
 
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 import database.session as db_session
 
-# Create test engine with NullPool - no connection caching between tests
 db_session.engine = create_async_engine(
     db_session.ASYNC_DATABASE_URL,
     echo=False,

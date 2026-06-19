@@ -9,6 +9,7 @@ build/
 .env
 .env.local
 .env.production
+.env.test
 *.sqlite3
 .DS_Store
 .vscode/
@@ -17,3 +18,5 @@ build/
 htmlcov/
 .coverage
 .pytest_cache/
+.mypy_cache/
+*.orig
