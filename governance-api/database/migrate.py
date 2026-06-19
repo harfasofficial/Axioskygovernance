@@ -9,10 +9,14 @@ import psycopg2
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://axiosky:axiosky@db:5432/axiosky"
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    logger.error(
+        "DATABASE_URL environment variable is required for migrations. "
+        "Set it before running: python -m database.migrate"
+    )
+    sys.exit(1)
+
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
