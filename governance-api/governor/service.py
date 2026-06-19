@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from audit.models import AuditEntry
 from audit.service import audit_service
@@ -47,11 +47,6 @@ logger = logging.getLogger(__name__)
 
 # -- Structured JSON logging for SIEM integration --------------------------------
 class JSONFormatter(logging.Formatter):
-    """
-    Emits every log line as a single JSON object.
-    The `request_id` field is injected by RequestIDLogAdapter on routes.
-    SIEM tools (Splunk, Elastic, Datadog Logs) can ingest this directly.
-    """
     def format(self, record):
         return json.dumps({
             "timestamp": self.formatTime(record),
@@ -68,14 +63,6 @@ logging.getLogger().addHandler(_json_handler)
 
 
 def get_request_logger(request_id: Optional[str]) -> logging.LoggerAdapter:
-    """
-    Returns a LoggerAdapter that injects request_id into every log record.
-    Use this inside request handlers so every log line is traceable.
-
-    Usage:
-        log = get_request_logger(request.state.request_id)
-        log.info("Processing evaluate for agent=%s", req.agent_id)
-    """
     return logging.LoggerAdapter(
         logger,
         extra={"request_id": request_id or ""},
@@ -107,10 +94,6 @@ def schedule_audit_log(entry: AuditEntry, payload: dict, request_id: str = None)
 # -- Receipt signing -------------------------------------------------------------
 def _sign_receipt(decision_id: str, tenant_id: str, status: str,
                   timestamp: str, payload_hash: str) -> str:
-    """
-    HMAC-SHA256 receipt signature over key decision fields.
-    Customers can independently verify any decision receipt.
-    """
     secret = os.getenv("SECRET_KEY", "")
     data = f"{decision_id}:{tenant_id}:{status}:{timestamp}:{payload_hash}"
     return hmac.new(secret.encode(), data.encode(), hashlib.sha256).hexdigest()
@@ -118,18 +101,8 @@ def _sign_receipt(decision_id: str, tenant_id: str, status: str,
 
 # -- Admin authentication --------------------------------------------------------
 def _require_admin(request: Request) -> None:
-    """
-    Verify that the request carries the correct ADMIN_SECRET in the
-    X-Admin-Secret header. Must be called at the start of every
-    admin-only endpoint (tenant provisioning, API key management).
-
-    Raises HTTP 403 if the secret is missing or wrong.
-    Uses a constant-time comparison (hmac.compare_digest) to prevent
-    timing oracle attacks.
-    """
     admin_secret = os.getenv("ADMIN_SECRET", "")
     if not admin_secret:
-        # ADMIN_SECRET not configured -- block all admin operations
         raise HTTPException(
             status_code=503,
             detail="Admin operations are not configured on this instance.",
@@ -142,28 +115,42 @@ def _require_admin(request: Request) -> None:
         )
 
 
-# -- Redis client for rate limiting and idempotency ------------------------------
+# -- Redis client ----------------------------------------------------------------
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_client: Optional[aioredis.Redis] = None
 
-# -- Rate limiting configuration -------------------------------------------------
+# -- Rate limiting ---------------------------------------------------------------
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MINUTE", "100"))
 RATE_WINDOW = 60
 MAX_RATE_LIMIT_KEYS = 10_000
 
 _rate_limit_store: OrderedDict = OrderedDict()
+_rate_limit_lock: asyncio.Lock = asyncio.Lock()
 
 
-async def check_rate_limit(request: Request):
+def _get_client_ip(request: Request) -> str:
+    """Extract real client IP from X-Forwarded-For when behind a reverse proxy."""
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+async def check_rate_limit(request: Request, batch_size: int = 1):
+    """
+    Rate-limit by tenant_id (preferred) or real client IP (fallback).
+    batch_size > 1 counts the batch as multiple requests so batch
+    callers cannot bypass the per-minute limit.
+    """
     tenant_id = getattr(request.state, "tenant_id", None)
-    key = f"tenant:{tenant_id}" if tenant_id else f"ip:{request.client.host if request.client else 'unknown'}"
+    key = f"tenant:{tenant_id}" if tenant_id else f"ip:{_get_client_ip(request)}"
     now = time.time()
 
     if redis_client:
         try:
             window_key = f"rl:{key}:{int(now // RATE_WINDOW)}"
             pipe = redis_client.pipeline()
-            pipe.incr(window_key)
+            pipe.incrby(window_key, batch_size)
             pipe.expire(window_key, RATE_WINDOW * 2)
             results = await pipe.execute()
             if results[0] > RATE_LIMIT:
@@ -176,21 +163,21 @@ async def check_rate_limit(request: Request):
         except aioredis.ConnectionError:
             pass
 
-    global _rate_limit_store
-    if key not in _rate_limit_store:
-        if len(_rate_limit_store) >= MAX_RATE_LIMIT_KEYS:
-            _rate_limit_store.popitem(last=False)
-        _rate_limit_store[key] = []
+    async with _rate_limit_lock:
+        if key not in _rate_limit_store:
+            if len(_rate_limit_store) >= MAX_RATE_LIMIT_KEYS:
+                _rate_limit_store.popitem(last=False)
+            _rate_limit_store[key] = []
 
-    timestamps = [t for t in _rate_limit_store[key] if t > now - RATE_WINDOW]
-    if len(timestamps) >= RATE_LIMIT:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded: {RATE_LIMIT} requests per {RATE_WINDOW}s",
-            headers={"Retry-After": str(RATE_WINDOW)},
-        )
-    timestamps.append(now)
-    _rate_limit_store[key] = timestamps
+        timestamps = [t for t in _rate_limit_store[key] if t > now - RATE_WINDOW]
+        if len(timestamps) + batch_size - 1 >= RATE_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit exceeded: {RATE_LIMIT} requests per {RATE_WINDOW}s",
+                headers={"Retry-After": str(RATE_WINDOW)},
+            )
+        timestamps.extend([now] * batch_size)
+        _rate_limit_store[key] = timestamps
 
 
 # -- Idempotency -----------------------------------------------------------------
@@ -244,6 +231,17 @@ def parse_iso_date(value: Optional[str], param_name: str) -> Optional[str]:
             status_code=422,
             detail=f"{param_name} must be ISO 8601 format (e.g., 2026-01-01T00:00:00Z)"
         )
+
+
+# -- Standard error envelope -----------------------------------------------------
+class APIError(BaseModel):
+    code: str
+    message: str
+    request_id: Optional[str] = None
+
+
+class APIErrorResponse(BaseModel):
+    error: APIError
 
 
 # -- Lifespan --------------------------------------------------------------------
@@ -321,7 +319,7 @@ async def _expire_pending_escalations():
 
 
 async def _chain_integrity_monitor():
-    """Background job: verify audit chain every hour and alert on breaks."""
+    """Background job: verify audit chain every hour."""
     while True:
         await asyncio.sleep(3600)
         try:
@@ -347,6 +345,8 @@ async def _chain_integrity_monitor():
                         result.get("entries_checked", 0),
                         extra={"request_id": ""},
                     )
+                # Yield control so other coroutines are not starved
+                await asyncio.sleep(0)
         except Exception as e:
             logger.error("Chain integrity monitor error: %s", e, extra={"request_id": ""})
 
@@ -365,11 +365,11 @@ app = FastAPI(
     },
 )
 
-# -- Wire up Prometheus /metrics endpoint ----------------------------------------
-# Must be called immediately after app creation, before middleware is attached.
 setup_metrics(app)
 
-# -- CORS ------------------------------------------------------------------------
+# -- CORS -- X-Admin-Secret intentionally excluded from allow_headers -----------
+# Admin endpoints are server-to-server only; browsers must never carry the
+# admin secret. Removing it from CORS prevents XSS-based admin secret theft.
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
@@ -382,24 +382,35 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Idempotency-Key", "X-Admin-Secret"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Idempotency-Key"],
     expose_headers=["X-Request-ID", "X-Decision-ID", "X-Request-Latency"],
     max_age=600,
 )
 
-# Middleware order: SecurityHeaders -> RequestID -> Tenant auth
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(TenantMiddleware)
 
 
+# -- Global HTTP exception handler: standard error envelope ----------------------
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    request_id = getattr(request.state, "request_id", None)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": str(exc.status_code),
+                "message": exc.detail,
+                "request_id": request_id,
+            }
+        },
+        headers=getattr(exc, "headers", None),
+    )
+
+
 # -- Request / Response models ---------------------------------------------------
 class ActionRequest(BaseModel):
-    """
-    tenant_id is intentionally absent from the request body.
-    It is always derived exclusively from the authenticated API key.
-    A caller should never need to assert their own identity.
-    """
     agent_id: str = Field(..., min_length=1, max_length=255)
     action_type: str = Field(..., min_length=1, max_length=255)
     timestamp: str = Field(..., min_length=1, max_length=50)
@@ -451,6 +462,7 @@ class EscalationResolutionBody(BaseModel):
 class PolicySimulateRequest(BaseModel):
     action_type: str = Field(..., min_length=1, max_length=255)
     payload: Dict[str, Any]
+    context_hooks: Optional[Dict[str, str]] = None
 
 
 class TenantCreateRequest(BaseModel):
@@ -478,6 +490,11 @@ async def _make_decision(
 
     decision_id = str(uuid.uuid4())
 
+    log.debug(
+        "Evaluating: agent_id=%s action_type=%s environment=%s",
+        req.agent_id, req.action_type, req.environment,
+    )
+
     evaluation_payload = await context_resolver.resolve(
         context_hooks=req.context_hooks or {},
         payload=req.payload,
@@ -488,7 +505,6 @@ async def _make_decision(
     rules = policy_loader.get_rules_for_action(req.action_type, templates)
 
     if not rules:
-        # FAIL CLOSED: unknown action_type -> BLOCK, not APPROVE
         log.warning(
             "No rules found for action_type=%s -- BLOCKING (fail-closed)",
             req.action_type,
@@ -536,13 +552,10 @@ async def _make_decision(
         )
         escalation_expires_minutes = eval_result.escalation.expires_minutes
 
-    # Single latency measurement point shared by response and audit log
     latency_ms = int(time.time() * 1000 - start_ms)
 
-    # Compute payload hash and receipt signature
-    import hashlib as _hl, json as _json
-    payload_hash = _hl.sha256(
-        _json.dumps(req.payload, sort_keys=True, default=str).encode()
+    payload_hash = hashlib.sha256(
+        json.dumps(req.payload, sort_keys=True, default=str).encode()
     ).hexdigest()
     now_ts = datetime.now(timezone.utc).isoformat()
     receipt_signature = _sign_receipt(decision_id, tenant_id, eval_result.status, now_ts, payload_hash)
@@ -601,11 +614,22 @@ async def health():
             await redis_client.ping()
         except Exception:
             redis_status = "unavailable"
+
+    db_status = "ok"
+    try:
+        async with AsyncSessionLocal() as db:
+            from sqlalchemy import text
+            await db.execute(text("SELECT 1"))
+    except Exception:
+        db_status = "unavailable"
+
+    overall = "ok" if redis_status == "ok" and db_status == "ok" else "degraded"
     return {
-        "status": "ok",
+        "status": overall,
         "service": "axiosky-governor",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "redis": redis_status,
+        "database": db_status,
     }
 
 
@@ -634,8 +658,9 @@ async def evaluate(request: Request, req: ActionRequest):
 
 @app.post("/v1/evaluate/batch")
 async def evaluate_batch(request: Request, req: BatchActionRequest):
-    """Evaluate up to 100 actions in a single request. One round-trip."""
-    await check_rate_limit(request)
+    """Evaluate up to 100 actions in a single request."""
+    batch_size = len(req.actions)
+    await check_rate_limit(request, batch_size=batch_size)
     tenant_id = request.state.tenant_id
     request_id = getattr(request.state, "request_id", None)
     log = get_request_logger(request_id)
@@ -652,7 +677,7 @@ async def evaluate_batch(request: Request, req: BatchActionRequest):
             results.append({"success": False, "error": "Internal evaluation error", "agent_id": action.agent_id})
 
     return {
-        "batch_size": len(req.actions),
+        "batch_size": batch_size,
         "processed": len(results),
         "results": results,
     }
@@ -662,10 +687,17 @@ async def evaluate_batch(request: Request, req: BatchActionRequest):
 async def simulate_policy(request: Request, req: PolicySimulateRequest):
     """
     Simulate a policy evaluation without writing to the audit log.
-    Use this to test policy rules before deploying them to production.
+    Optionally resolves context_hooks to mirror production evaluation.
     """
     await check_rate_limit(request)
     validate_payload(req.payload)
+
+    simulation_payload = req.payload
+    if req.context_hooks:
+        simulation_payload = await context_resolver.resolve(
+            context_hooks=req.context_hooks,
+            payload=req.payload,
+        )
 
     templates = policy_loader.load_all_templates()
     rules = policy_loader.get_rules_for_action(req.action_type, templates)
@@ -687,7 +719,7 @@ async def simulate_policy(request: Request, req: PolicySimulateRequest):
 
     eval_result = policy_engine.evaluate(
         action_type=req.action_type,
-        payload=req.payload,
+        payload=simulation_payload,
         rules=rules,
     )
 
@@ -705,17 +737,23 @@ async def simulate_policy(request: Request, req: PolicySimulateRequest):
     }
 
 
-@app.post("/v1/audit-logs/verify")
-async def verify_audit_chain(req: VerifyChainRequest, request: Request):
+@app.get("/v1/audit-logs/verify")
+async def verify_audit_chain(
+    request: Request,
+    tenant_id: str = Query(...),
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+):
+    """Verify the integrity of the audit chain. GET with query params."""
     await check_rate_limit(request)
-    if req.tenant_id != request.state.tenant_id:
+    if tenant_id != request.state.tenant_id:
         raise HTTPException(status_code=403, detail="Cannot verify another tenant chain")
 
-    start_date = parse_iso_date(req.start_date, "start_date")
-    end_date = parse_iso_date(req.end_date, "end_date")
+    start_date = parse_iso_date(start_date, "start_date")
+    end_date = parse_iso_date(end_date, "end_date")
 
     return await audit_service.verify_chain(
-        tenant_id=req.tenant_id,
+        tenant_id=tenant_id,
         start_date=start_date,
         end_date=end_date,
     )
@@ -940,18 +978,8 @@ async def reject_escalation(escalation_id: str, request: Request, body: Escalati
 
 
 # -- Admin-Only: Tenant Provisioning ---------------------------------------------
-# All endpoints below require a valid X-Admin-Secret header.
-# The ADMIN_SECRET env var must be set and is validated at startup.
-# Regular tenant API keys cannot access these endpoints.
-
 @app.post("/v1/tenants", status_code=201)
 async def create_tenant(request: Request, body: TenantCreateRequest):
-    """
-    Create a new tenant.
-
-    Requires X-Admin-Secret header matching ADMIN_SECRET env var.
-    Only callable by the platform operator, not by tenant API keys.
-    """
     _require_admin(request)
     await check_rate_limit(request)
     log = get_request_logger(getattr(request.state, "request_id", None))
@@ -979,18 +1007,12 @@ async def create_tenant(request: Request, body: TenantCreateRequest):
 
 @app.post("/v1/tenants/{tenant_id}/api-keys", status_code=201)
 async def create_api_key(tenant_id: str, request: Request, body: ApiKeyCreateRequest):
-    """
-    Generate a new API key for a tenant.
+    from datetime import timedelta
+    from auth.service import auth_service as _auth
 
-    Requires X-Admin-Secret header.
-    Returns the raw key ONCE -- it cannot be retrieved again.
-    """
     _require_admin(request)
     await check_rate_limit(request)
     log = get_request_logger(getattr(request.state, "request_id", None))
-
-    from datetime import timedelta
-    from auth.service import auth_service as _auth
 
     raw_key = _auth.generate_api_key()
     key_hash = _auth.hash_key(raw_key)
@@ -1000,12 +1022,12 @@ async def create_api_key(tenant_id: str, request: Request, body: ApiKeyCreateReq
         expires_at = datetime.now(timezone.utc) + timedelta(days=body.expires_days)
 
     async with AsyncSessionLocal() as db:
-        # Verify the target tenant exists before creating a key for it
         stmt = select(Tenant).where(Tenant.id == int(tenant_id))
         result = await db.execute(stmt)
         tenant = result.scalar_one_or_none()
         if not tenant:
-            raise HTTPException(status_code=404, detail=f"Tenant {tenant_id} not found")
+            # Return 400 not 404 to avoid tenant ID enumeration
+            raise HTTPException(status_code=400, detail="Invalid tenant ID")
 
         api_key = ApiKey(
             tenant_id=int(tenant_id),
@@ -1020,7 +1042,7 @@ async def create_api_key(tenant_id: str, request: Request, body: ApiKeyCreateReq
 
     return {
         "key_id": api_key.id,
-        "api_key": raw_key,  # Shown ONCE. Store securely.
+        "api_key": raw_key,
         "tenant_id": tenant_id,
         "expires_at": expires_at.isoformat() if expires_at else None,
         "warning": "This API key will not be shown again. Store it securely.",
@@ -1029,11 +1051,6 @@ async def create_api_key(tenant_id: str, request: Request, body: ApiKeyCreateReq
 
 @app.delete("/v1/tenants/{tenant_id}/api-keys/{key_id}", status_code=200)
 async def revoke_api_key(tenant_id: str, key_id: int, request: Request):
-    """
-    Revoke (delete) an API key. Takes effect immediately.
-
-    Requires X-Admin-Secret header.
-    """
     _require_admin(request)
     await check_rate_limit(request)
     log = get_request_logger(getattr(request.state, "request_id", None))
